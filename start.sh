@@ -128,7 +128,7 @@ setup_wifi() {
     print_step "Connecting to \"${WIFI_SSID}\"..."
 
     
-    wpa_cli -i wlan0 <<EOF
+    wpa_cli -i wlan0 <<EOF &>/dev/null
 add_network
 set_network 0 ssid "${WIFI_SSID}"
 set_network 0 psk "${WIFI_PSK}"
@@ -211,4 +211,119 @@ fi
 print_success_box "All network checks PASSED — proceeding"
 print_info "Host: $(hostname)"
 print_info "IP  : $(ip -4 addr show scope global | grep inet | awk '{print $2}' | head -1)"
+echo ""
+
+# =============================================================================
+# PHASE 2 — DISK DETECTION & PARTITION
+# =============================================================================
+print_header "Phase 2 — Disk Detection & Partition"
+
+# --- Detect disks ---
+print_step "Detecting available disks..."
+
+mapfile -t DISKS < <(lsblk -dnpo NAME,SIZE,TYPE | awk '$3 == "disk" {print $1}')
+mapfile -t DISK_INFO < <(lsblk -dnpo NAME,SIZE,MODEL,TYPE | awk '$NF == "disk" {$NF=""; print}')
+
+if [[ ${#DISKS[@]} -eq 0 ]]; then
+  print_fail "No disks detected"
+  abort "No disks found. Check your VM storage configuration."
+fi
+
+print_ok "Found ${#DISKS[@]} disk(s)"
+echo ""
+
+echo -e "  ${WHITE}Available disks:${NC}"
+echo -e "  ${DIM}────────────────────────────────────────────${NC}"
+for idx in "${!DISK_INFO[@]}"; do
+  echo -e "  ${CYAN}[$((idx + 1))]${NC}  ${DISK_INFO[$idx]}"
+done
+echo -e "  ${DIM}────────────────────────────────────────────${NC}"
+echo ""
+
+# --- Select disk ---
+if [[ ${#DISKS[@]} -eq 1 ]]; then
+  DISK="${DISKS[0]}"
+  print_info "Auto-selected: ${DISK} (only disk available)"
+else
+  while true; do
+    echo -ne "  ${WHITE}Select disk [1-${#DISKS[@]}]: ${NC}"
+    read -r disk_choice
+    if [[ "$disk_choice" =~ ^[0-9]+$ ]] && (( disk_choice >= 1 && disk_choice <= ${#DISKS[@]} )); then
+      DISK="${DISKS[$((disk_choice - 1))]}"
+      break
+    fi
+    echo -e "  ${RED}Invalid choice. Try again.${NC}"
+  done
+fi
+
+DISK_SIZE=$(lsblk -dnpo SIZE "$DISK" | xargs)
+echo ""
+print_info "Target: ${DISK} (${DISK_SIZE})"
+
+# --- Confirmation ---
+echo ""
+echo -e "  ${RED}┌─────────────────────────────────────────────┐${NC}"
+echo -e "  ${RED}│  ⚠  WARNING: ALL DATA ON ${DISK} WILL BE   ${NC}"
+echo -e "  ${RED}│     PERMANENTLY ERASED!                     ${NC}"
+echo -e "  ${RED}└─────────────────────────────────────────────┘${NC}"
+echo ""
+echo -ne "  ${WHITE}Type ${YELLOW}YES${WHITE} to confirm: ${NC}"
+read -r confirm
+if [[ "$confirm" != "YES" ]]; then
+  abort "Disk operation cancelled by user."
+fi
+echo ""
+
+# --- Partition (MBR: boot 512M + swap 2G + root rest) ---
+print_step "Partitioning ${DISK} (MBR: boot + swap + root)..."
+
+parted -s "$DISK" -- \
+  mklabel msdos \
+  mkpart primary ext4 1MiB 513MiB \
+  set 1 boot on \
+  mkpart primary linux-swap 513MiB 2561MiB \
+  mkpart primary ext4 2561MiB 100%
+
+print_ok "Partitioned ${DISK}"
+
+if [[ "$DISK" == *"nvme"* ]]; then
+  PART_BOOT="${DISK}p1"
+  PART_SWAP="${DISK}p2"
+  PART_ROOT="${DISK}p3"
+else
+  PART_BOOT="${DISK}1"
+  PART_SWAP="${DISK}2"
+  PART_ROOT="${DISK}3"
+fi
+
+# --- Format ---
+print_step "Formatting ${PART_BOOT} (ext4 — boot)..."
+mkfs.ext4 -qFL boot "$PART_BOOT"
+print_ok "Formatted ${PART_BOOT} (boot)"
+
+print_step "Formatting ${PART_SWAP} (swap)..."
+mkswap -qL swap "$PART_SWAP"
+print_ok "Formatted ${PART_SWAP} (swap)"
+
+print_step "Formatting ${PART_ROOT} (ext4 — root)..."
+mkfs.ext4 -qFL nixos "$PART_ROOT"
+print_ok "Formatted ${PART_ROOT} (root)"
+
+# --- Mount ---
+print_step "Mounting filesystems to /mnt..."
+
+mount "$PART_ROOT" /mnt
+mkdir -p /mnt/boot
+mount "$PART_BOOT" /mnt/boot
+swapon "$PART_SWAP"
+
+print_ok "Mounted all filesystems"
+
+# --- Summary ---
+echo ""
+print_info "boot : ${PART_BOOT} → /mnt/boot (512M)"
+print_info "swap : ${PART_SWAP} (2G)"
+print_info "root : ${PART_ROOT} → /mnt      (rest)"
+echo ""
+print_success_box "Disk ready — proceeding to installation"
 echo ""
