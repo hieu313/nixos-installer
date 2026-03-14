@@ -5,6 +5,14 @@
 
 set -euo pipefail
 
+if [[ $EUID -ne 0 ]]; then
+  echo ""
+  echo -e "  ${RED}✗  Script must be run as root.${NC}"
+  echo -e "  ${DIM}Run: sudo bash install.sh${NC}"
+  echo ""
+  exit 1
+fi
+
 # -----------------------------------------------------------------------------
 # Colors & symbols
 # -----------------------------------------------------------------------------
