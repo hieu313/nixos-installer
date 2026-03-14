@@ -277,7 +277,7 @@ echo -e "  ${RED}└────────────────────
 echo ""
 echo -ne "  ${WHITE}Type ${YELLOW}YES${WHITE} to confirm: ${NC}"
 read -r confirm < /dev/tty
-if [[ "$confirm" != "YES" ]]; then
+if [[ "${confirm,,}" != "yes" ]]; then
   abort "Disk operation cancelled by user."
 fi
 echo ""
