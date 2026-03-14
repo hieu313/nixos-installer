@@ -75,7 +75,7 @@ print_warn_box() {
 
 abort() {
   print_error_box "$1"
-  echo -e "  ${DIM}Script dừng lại. Kiểm tra lại và chạy lại.${NC}"
+  echo -e "  ${DIM}Script aborted. Please check and try again.${NC}"
   echo ""
   exit 1
 }
@@ -84,14 +84,13 @@ abort() {
 # WiFi setup via wpa_supplicant
 # -----------------------------------------------------------------------------
 setup_wifi() {
-  print_warn_box "Không có mạng — Thiết lập WiFi"
+  print_warn_box "No network — WiFi Setup"
 
-  echo -e "  ${INFO}  Khởi động wpa_supplicant..."
+  echo -e "  ${INFO}  Starting wpa_supplicant..."
   systemctl start wpa_supplicant 2>/dev/null || true
   sleep 1
 
-  # Scan và list SSID
-  print_step "Đang scan mạng WiFi..."
+  print_step "Scanning WiFi networks..."
   wpa_cli -i wlan0 scan &>/dev/null
   sleep 3
 
@@ -99,14 +98,14 @@ setup_wifi() {
     | awk 'NR>1 && $NF != "" && $NF != "[P2P]" {print $NF}' \
     | sort -u)
 
-  print_ok "Scan hoàn tất"
+  print_ok "Scan complete"
   echo ""
 
   if [[ -z "$SSID_LIST" ]]; then
-    echo -e "  ${YELLOW}⚠  Không tìm thấy mạng WiFi nào. Nhập SSID thủ công.${NC}"
+    echo -e "  ${YELLOW}⚠  No WiFi networks found. Enter SSID manually.${NC}"
     echo ""
   else
-    echo -e "  ${WHITE}Danh sách mạng WiFi:${NC}"
+    echo -e "  ${WHITE}Available WiFi networks:${NC}"
     echo -e "  ${DIM}────────────────────────────────${NC}"
     i=1
     while IFS= read -r ssid; do
@@ -117,20 +116,19 @@ setup_wifi() {
     echo ""
   fi
 
-  # Nhập SSID
-  echo -ne "  ${WHITE}SSID (tên WiFi): ${NC}"
-  read -r WIFI_SSID
+  while true; do
+    echo -ne "  ${WHITE}SSID (WiFi name): ${NC}"
+    read -r WIFI_SSID
 
-  # Nhập password (ẩn input)
-  echo -ne "  ${WHITE}Password      : ${NC}"
-  read -rs WIFI_PSK
-  echo ""
-  echo ""
+    echo -ne "  ${WHITE}Password       : ${NC}"
+    read -rs WIFI_PSK
+    echo ""
+    echo ""
 
-  print_step "Đang kết nối tới \"${WIFI_SSID}\"..."
+    print_step "Connecting to \"${WIFI_SSID}\"..."
 
-  # Dùng wpa_cli để kết nối
-  wpa_cli -i wlan0 <<EOF
+    
+    wpa_cli -i wlan0 <<EOF
 add_network
 set_network 0 ssid "${WIFI_SSID}"
 set_network 0 psk "${WIFI_PSK}"
@@ -139,20 +137,25 @@ enable_network 0
 quit
 EOF
 
-  # Chờ kết nối
-  sleep 4
+    sleep 4
 
-  # Xin IP qua DHCP
-  dhclient wlan0 &>/dev/null || true
-  sleep 2
+    dhclient wlan0 &>/dev/null || true
+    sleep 2
 
-  # Kiểm tra lại
-  if ping -c 2 -W 3 1.1.1.1 &>/dev/null; then
-    print_ok "Kết nối WiFi thành công!"
-  else
-    print_fail "Kết nối WiFi thất bại"
-    abort "Không kết nối được WiFi. Kiểm tra lại SSID / password."
-  fi
+    if ping -c 2 -W 3 1.1.1.1 &>/dev/null; then
+      print_ok "WiFi connected successfully!"
+      break
+    fi
+
+    print_fail "WiFi connection failed"
+    echo ""
+    echo -ne "  ${WHITE}Retry (r) or Abort (q)? [r/q]: ${NC}"
+    read -r retry_choice
+    if [[ "$retry_choice" == "q" || "$retry_choice" == "Q" ]]; then
+      abort "WiFi connection failed. Aborted by user."
+    fi
+    echo ""
+  done
 }
 
 # -----------------------------------------------------------------------------
@@ -178,34 +181,34 @@ echo ""
 print_header "Phase 1 — Network Check"
 
 # --- Test 1: ping 1.1.1.1 ---
-print_step "Kiểm tra kết nối internet (ping 1.1.1.1)..."
+print_step "Checking internet connection (ping 1.1.1.1)..."
 if ping -c 2 -W 3 1.1.1.1 &>/dev/null; then
-  print_ok "Kết nối internet OK"
+  print_ok "Internet connection OK"
 else
-  print_fail "Không có kết nối ethernet"
+  print_fail "No ethernet connection"
   setup_wifi
 fi
 
 # --- Test 2: DNS resolution ---
-print_step "Kiểm tra DNS (cache.nixos.org)..."
+print_step "Checking DNS (cache.nixos.org)..."
 if getent hosts cache.nixos.org &>/dev/null; then
-  print_ok "DNS phân giải OK"
+  print_ok "DNS resolution OK"
 else
-  print_fail "DNS không phân giải được"
-  abort "DNS lỗi. Thêm nameserver vào /etc/resolv.conf:\n  echo 'nameserver 1.1.1.1' > /etc/resolv.conf"
+  print_fail "DNS resolution failed"
+  abort "DNS error. Add nameserver to /etc/resolv.conf:\n  echo 'nameserver 1.1.1.1' > /etc/resolv.conf"
 fi
 
 # --- Test 3: Reach Nix binary cache ---
-print_step "Kiểm tra Nix binary cache..."
+print_step "Checking Nix binary cache..."
 if curl -fsS --max-time 5 https://cache.nixos.org/nix-cache-info &>/dev/null; then
   print_ok "Nix binary cache reachable"
 else
-  print_fail "Không kết nối được cache.nixos.org"
-  abort "Nix cache không khả dụng. Kiểm tra lại mạng hoặc thử lại sau."
+  print_fail "Cannot reach cache.nixos.org"
+  abort "Nix cache unavailable. Check your network or try again later."
 fi
 
 # --- Summary ---
-print_success_box "Tất cả kiểm tra mạng đều PASS — tiếp tục cài đặt"
+print_success_box "All network checks PASSED — proceeding"
 print_info "Host: $(hostname)"
 print_info "IP  : $(ip -4 addr show scope global | grep inet | awk '{print $2}' | head -1)"
 echo ""
