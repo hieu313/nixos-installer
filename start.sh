@@ -5,6 +5,8 @@
 
 set -euo pipefail
 
+export NIX_CONFIG="experimental-features = nix-command flakes"
+
 # -----------------------------------------------------------------------------
 # Colors & symbols
 # -----------------------------------------------------------------------------
@@ -371,4 +373,251 @@ print_info "swap : ${PART_SWAP} (2G)"
 print_info "root : ${PART_ROOT} → /mnt      (rest)"
 echo ""
 print_success_box "Disk ready — proceeding to installation"
+echo ""
+
+# =============================================================================
+# PHASE 3 — NIXOS INSTALLATION
+# =============================================================================
+print_header "Phase 3 — NixOS Installation"
+
+# --- Generate hardware config ---
+print_step "Generating hardware configuration..."
+nixos-generate-config --root /mnt
+print_ok "Generated /mnt/etc/nixos/hardware-configuration.nix"
+
+FLAKE_DIR="/mnt/etc/nixos"
+HARDWARE_CFG="/mnt/etc/nixos/hardware-configuration.nix"
+
+# --- Idempotency: reuse existing flake? ---
+PHASE3_SKIP=0
+if [[ -f "${FLAKE_DIR}/flake.nix" ]]; then
+  print_warn_box "Existing flake detected at ${FLAKE_DIR}"
+  echo -ne "  ${WHITE}Use existing flake (y) or Reconfigure (n)? [y/n]: ${NC}"
+  read -r flake_reuse < /dev/tty
+  if [[ "$flake_reuse" == "y" || "$flake_reuse" == "Y" || -z "$flake_reuse" ]]; then
+    PHASE3_SKIP=1
+    print_info "Reusing existing flake"
+  fi
+fi
+
+if [[ "$PHASE3_SKIP" -ne 1 ]]; then
+
+  # --- Choose mode ---
+  echo ""
+  echo -e "  ${WHITE}How do you want to configure NixOS?${NC}"
+  echo -e "  ${DIM}────────────────────────────────────────────${NC}"
+  echo -e "  ${CYAN}[A]${NC}  Generate minimal flake (first-time install)"
+  echo -e "  ${CYAN}[B]${NC}  Clone from existing dotfiles repo"
+  echo -e "  ${DIM}────────────────────────────────────────────${NC}"
+  echo ""
+  echo -ne "  ${WHITE}Choice [a/b]: ${NC}"
+  read -r install_mode < /dev/tty
+  install_mode="${install_mode,,}"
+
+  if [[ "$install_mode" != "a" && "$install_mode" != "b" ]]; then
+    install_mode="a"
+  fi
+
+  # -----------------------------------------------------------------------
+  # Mode A — Generate minimal flake from scratch
+  # -----------------------------------------------------------------------
+  if [[ "$install_mode" == "a" ]]; then
+    echo ""
+    echo -ne "  ${WHITE}Hostname : ${NC}"
+    read -r NIXOS_HOST < /dev/tty
+    NIXOS_HOST="${NIXOS_HOST:-nixos-vm}"
+
+    echo -ne "  ${WHITE}Username : ${NC}"
+    read -r NIXOS_USER < /dev/tty
+    NIXOS_USER="${NIXOS_USER:-user}"
+    echo ""
+
+    print_step "Generating flake.nix for \"${NIXOS_HOST}\"..."
+
+    cat > "${FLAKE_DIR}/flake.nix" <<FLAKE
+{
+  description = "NixOS — ${NIXOS_HOST}";
+
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  };
+
+  outputs = { nixpkgs, ... }: {
+    nixosConfigurations.${NIXOS_HOST} = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        ./hardware-configuration.nix
+        ./configuration.nix
+      ];
+    };
+  };
+}
+FLAKE
+    print_ok "Generated flake.nix"
+
+    print_step "Generating configuration.nix..."
+
+    cat > "${FLAKE_DIR}/configuration.nix" <<'CONF_HEAD'
+{ config, pkgs, ... }:
+
+{
+CONF_HEAD
+
+    cat >> "${FLAKE_DIR}/configuration.nix" <<CONF_BODY
+  networking.hostName = "${NIXOS_HOST}";
+
+  boot.loader.grub = {
+    enable = true;
+    device = "${DISK}";
+  };
+
+  time.timeZone = "Asia/Ho_Chi_Minh";
+
+  users.users.${NIXOS_USER} = {
+    isNormalUser = true;
+    extraGroups = [ "wheel" "networkmanager" ];
+    initialPassword = "changeme";
+  };
+
+  networking.networkmanager.enable = true;
+
+  environment.systemPackages = with pkgs; [
+    vim
+    git
+    curl
+    htop
+  ];
+
+  services.openssh.enable = true;
+
+  system.stateVersion = "24.11";
+}
+CONF_BODY
+    print_ok "Generated configuration.nix"
+
+    # nix flake requires a git repo to read flake.nix
+    git -C "$FLAKE_DIR" init -q
+    git -C "$FLAKE_DIR" add -A
+
+  # -----------------------------------------------------------------------
+  # Mode B — Clone from existing repo
+  # -----------------------------------------------------------------------
+  else
+    echo ""
+    echo -e "  ${WHITE}Enter your NixOS flake repository URL:${NC}"
+    echo -e "  ${DIM}  e.g. https://github.com/user/nixos-config${NC}"
+    echo -e "  ${DIM}  e.g. git@github.com:user/nixos-config.git${NC}"
+    echo ""
+    echo -ne "  ${WHITE}Flake repo URL: ${NC}"
+    read -r FLAKE_REPO < /dev/tty
+
+    if [[ -z "$FLAKE_REPO" ]]; then
+      abort "No flake repo URL provided."
+    fi
+
+    print_step "Cloning flake into ${FLAKE_DIR}..."
+
+    cp "$HARDWARE_CFG" /tmp/hardware-configuration.nix
+    rm -rf "$FLAKE_DIR"
+
+    if ! git clone "$FLAKE_REPO" "$FLAKE_DIR" 2>/dev/null; then
+      print_fail "Clone failed"
+      abort "Failed to clone ${FLAKE_REPO}. Check the URL and try again."
+    fi
+    print_ok "Cloned flake repository"
+
+    print_step "Injecting hardware-configuration.nix into flake..."
+    HARDWARE_DEST=$(find "$FLAKE_DIR" -name "hardware-configuration.nix" -not -path "*/.git/*" | head -1)
+    if [[ -n "$HARDWARE_DEST" ]]; then
+      cp /tmp/hardware-configuration.nix "$HARDWARE_DEST"
+      print_ok "Replaced ${HARDWARE_DEST}"
+    else
+      cp /tmp/hardware-configuration.nix "${FLAKE_DIR}/hardware-configuration.nix"
+      print_ok "Copied to ${FLAKE_DIR}/hardware-configuration.nix"
+    fi
+  fi
+
+fi # end PHASE3_SKIP
+
+# --- Detect hostname target ---
+echo ""
+FLAKE_HOSTS=$(nix flake show "path:${FLAKE_DIR}" --json --no-write-lock-file 2>/dev/null \
+  | jq -r '.nixosConfigurations // {} | keys[]' 2>/dev/null || true)
+
+if [[ -z "${NIXOS_HOST:-}" ]]; then
+  if [[ -n "$FLAKE_HOSTS" ]]; then
+    echo -e "  ${WHITE}Available NixOS configurations:${NC}"
+    echo -e "  ${DIM}────────────────────────────────${NC}"
+    i=1
+    mapfile -t HOST_LIST <<< "$FLAKE_HOSTS"
+    for h in "${HOST_LIST[@]}"; do
+      echo -e "  ${CYAN}[$i]${NC}  $h"
+      ((i++))
+    done
+    echo -e "  ${DIM}────────────────────────────────${NC}"
+    echo ""
+
+    if [[ ${#HOST_LIST[@]} -eq 1 ]]; then
+      NIXOS_HOST="${HOST_LIST[0]}"
+      print_info "Auto-selected: ${NIXOS_HOST}"
+    else
+      while true; do
+        echo -ne "  ${WHITE}Select config [1-${#HOST_LIST[@]}] or type name: ${NC}"
+        read -r host_choice < /dev/tty
+        if [[ "$host_choice" =~ ^[0-9]+$ ]] && (( host_choice >= 1 && host_choice <= ${#HOST_LIST[@]} )); then
+          NIXOS_HOST="${HOST_LIST[$((host_choice - 1))]}"
+          break
+        elif [[ -n "$host_choice" ]]; then
+          NIXOS_HOST="$host_choice"
+          break
+        fi
+        echo -e "  ${RED}Invalid choice. Try again.${NC}"
+      done
+    fi
+  else
+    echo -ne "  ${WHITE}Hostname (flake target): ${NC}"
+    read -r NIXOS_HOST < /dev/tty
+    if [[ -z "$NIXOS_HOST" ]]; then
+      abort "No hostname provided."
+    fi
+  fi
+fi
+
+echo ""
+print_info "Installing: ${FLAKE_DIR}#${NIXOS_HOST}"
+echo ""
+
+# --- nixos-install ---
+echo ""
+echo -e "  ${WAIT}  ${WHITE}Running nixos-install (this may take a while)...${NC}"
+echo ""
+
+if ! nixos-install --root /mnt --flake "${FLAKE_DIR}#${NIXOS_HOST}" --no-root-passwd; then
+  echo ""
+  echo -e "  ${FAIL}  ${RED}nixos-install failed${NC}"
+  abort "Installation failed. Check the output above for errors."
+fi
+
+echo ""
+echo -e "  ${PASS}  ${GREEN}nixos-install completed successfully${NC}"
+
+# --- Set root password ---
+echo ""
+echo -e "  ${WHITE}Set root password for the new system:${NC}"
+while ! nixos-enter --root /mnt --command "passwd root" < /dev/tty; do
+  echo -e "  ${RED}Passwords did not match. Try again.${NC}"
+done
+echo -e "  ${PASS}  ${GREEN}Root password set${NC}"
+
+# --- Done ---
+print_success_box "NixOS installation complete!"
+echo ""
+print_info "Flake  : ${FLAKE_DIR}#${NIXOS_HOST}"
+print_info "Root   : ${PART_ROOT} → /mnt"
+print_info "Boot   : ${PART_BOOT} → /mnt/boot"
+echo ""
+echo -e "  ${YELLOW}┌─────────────────────────────────────────────┐${NC}"
+echo -e "  ${YELLOW}│  Ready to reboot into your new system!      ${NC}"
+echo -e "  ${YELLOW}│  Run: ${WHITE}reboot${YELLOW}                               ${NC}"
+echo -e "  ${YELLOW}└─────────────────────────────────────────────┘${NC}"
 echo ""
