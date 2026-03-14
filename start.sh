@@ -118,10 +118,10 @@ setup_wifi() {
 
   while true; do
     echo -ne "  ${WHITE}SSID (WiFi name): ${NC}"
-    read -r WIFI_SSID
+    read -r WIFI_SSID < /dev/tty
 
     echo -ne "  ${WHITE}Password       : ${NC}"
-    read -rs WIFI_PSK
+    read -rs WIFI_PSK < /dev/tty
     echo ""
     echo ""
 
@@ -150,7 +150,7 @@ EOF
     print_fail "WiFi connection failed"
     echo ""
     echo -ne "  ${WHITE}Retry (r) or Abort (q)? [r/q]: ${NC}"
-    read -r retry_choice
+    read -r retry_choice < /dev/tty
     if [[ "$retry_choice" == "q" || "$retry_choice" == "Q" ]]; then
       abort "WiFi connection failed. Aborted by user."
     fi
@@ -247,7 +247,7 @@ if [[ ${#DISKS[@]} -eq 1 ]]; then
 else
   while true; do
     echo -ne "  ${WHITE}Select disk [1-${#DISKS[@]}]: ${NC}"
-    read -r disk_choice
+    read -r disk_choice < /dev/tty
     if [[ "$disk_choice" =~ ^[0-9]+$ ]] && (( disk_choice >= 1 && disk_choice <= ${#DISKS[@]} )); then
       DISK="${DISKS[$((disk_choice - 1))]}"
       break
@@ -268,7 +268,7 @@ echo -e "  ${RED}│     PERMANENTLY ERASED!                     ${NC}"
 echo -e "  ${RED}└─────────────────────────────────────────────┘${NC}"
 echo ""
 echo -ne "  ${WHITE}Type ${YELLOW}YES${WHITE} to confirm: ${NC}"
-read -r confirm
+read -r confirm < /dev/tty
 if [[ "$confirm" != "YES" ]]; then
   abort "Disk operation cancelled by user."
 fi
