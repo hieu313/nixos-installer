@@ -609,6 +609,12 @@ while ! nixos-enter --root /mnt --command "passwd root" < /dev/tty; do
 done
 echo -e "  ${PASS}  ${GREEN}Root password set${NC}"
 
+if [[ -n "${NIXOS_USER:-}" ]]; then
+  echo ""
+  print_info "User \"${NIXOS_USER}\" initial password: changeme"
+  print_info "Change it after first login with: passwd"
+fi
+
 # --- Done ---
 print_success_box "NixOS installation complete!"
 echo ""
