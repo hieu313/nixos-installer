@@ -227,6 +227,40 @@ echo ""
 # =============================================================================
 print_header "Phase 2 — Disk Detection & Partition"
 
+# --- Idempotency check ---
+if mountpoint -q /mnt 2>/dev/null; then
+  EXISTING_ROOT=$(findmnt -no SOURCE /mnt 2>/dev/null || true)
+  EXISTING_BOOT=$(findmnt -no SOURCE /mnt/boot 2>/dev/null || true)
+  EXISTING_SWAP=$(swapon --show=NAME --noheadings 2>/dev/null | head -1 || true)
+
+  if [[ -n "$EXISTING_ROOT" && -n "$EXISTING_BOOT" && -n "$EXISTING_SWAP" ]]; then
+    print_warn_box "Existing partition layout detected"
+    print_info "root : ${EXISTING_ROOT} → /mnt"
+    print_info "boot : ${EXISTING_BOOT} → /mnt/boot"
+    print_info "swap : ${EXISTING_SWAP}"
+    echo ""
+    echo -ne "  ${WHITE}Use existing layout (y) or Re-partition (n)? [y/n]: ${NC}"
+    read -r reuse_choice < /dev/tty
+
+    if [[ "$reuse_choice" == "y" || "$reuse_choice" == "Y" || -z "$reuse_choice" ]]; then
+      DISK=$(lsblk -npo PKNAME "$EXISTING_ROOT" | head -1)
+      if [[ "$DISK" == *"nvme"* ]]; then
+        PART_BOOT="${DISK}p1"; PART_SWAP="${DISK}p2"; PART_ROOT="${DISK}p3"
+      else
+        PART_BOOT="${DISK}1"; PART_SWAP="${DISK}2"; PART_ROOT="${DISK}3"
+      fi
+      echo ""
+      print_success_box "Reusing existing layout — skipping partition"
+      echo ""
+
+      # Jump past partitioning
+      PHASE2_SKIP=1
+    fi
+  fi
+fi
+
+if [[ "${PHASE2_SKIP:-0}" -ne 1 ]]; then
+
 # --- Detect disks ---
 print_step "Detecting available disks..."
 
@@ -327,6 +361,8 @@ mount "$PART_BOOT" /mnt/boot
 swapon "$PART_SWAP"
 
 print_ok "Mounted all filesystems"
+
+fi # end PHASE2_SKIP
 
 # --- Summary ---
 echo ""
